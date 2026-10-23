@@ -1,0 +1,286 @@
+// Saiman-Burtan Prisma Schema
+// Designed for Supabase PostgreSQL (Pgbouncer pooled connection & direct migration)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                   String            @id @default(uuid())
+  googleId             String            @unique
+  email                String
+  youtubeChannelId     String?
+  youtubeChannelTitle  String?
+  youtubeAvatar        String?
+  refreshTokenEncrypted String?          // Encrypted with AES-256-GCM
+  discordUserId        String?           @unique
+  discordUsername      String?
+  needsReauth          Boolean           @default(false)
+  isBlocked            Boolean           @default(false)
+  firstSeenAt          DateTime          @default(now())
+  lastLoginAt          DateTime          @default(now())
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  unlocks              Unlock[]
+  verificationLogs     VerificationLog[]
+  assignedVouchers     VoucherPool[]
+  nonces               UnlockNonce[]
+
+  @@index([googleId])
+  @@index([discordUserId])
+  @@index([isBlocked])
+}
+
+model AdminUser {
+  id                 String     @id @default(uuid())
+  email              String     @unique
+  passwordHash       String
+  role               String     @default("admin")
+  twoFactorSecret    String?
+  isTwoFactorEnabled Boolean    @default(false)
+  lastLoginAt        DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  auditLogs          AuditLog[]
+
+  @@index([email])
+}
+
+model Link {
+  id                     String            @id @default(uuid())
+  slug                   String            @unique
+  title                  String
+  description            String            @db.Text
+  thumbnailUrl           String?
+  mode                   String            @default("REQUIRE_ALL") // REQUIRE_ALL or REQUIRE_N
+  minRequirementsRequired Int              @default(0)
+  unlockQuota            Int               @default(0) // 0 = unlimited
+  unlockCount            Int               @default(0)
+  viewCount              Int               @default(0)
+  isActive               Boolean           @default(true)
+  isExpired              Boolean           @default(false)
+  expiresAt              DateTime?
+  passwordHash           String?           // Optional link protection
+  recheckIntervalMinutes Int               @default(60)
+  cheatThresholdPercent  Int               @default(50)
+  needsReview            Boolean           @default(false)
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  requirements           Requirement[]
+  rewards                RewardItem[]
+  unlocks                Unlock[]
+  voucherPool            VoucherPool[]
+  statsSnapshots         StatsSnapshot[]
+  verificationLogs       VerificationLog[]
+
+  @@index([slug])
+  @@index([isActive])
+  @@index([isExpired])
+}
+
+model Requirement {
+  id          String   @id @default(uuid())
+  linkId      String
+  type        String   // SUBSCRIBE, LIKE, COMMENT, DISCORD_JOIN, MANUAL
+  sortOrder   Int      @default(0)
+  title       String
+  config      String   @db.Text // JSON with channelId, videoId, keywords, guildId, etc.
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  link        Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@index([linkId])
+}
+
+model RewardItem {
+  id             String   @id @default(uuid())
+  linkId         String
+  type           String   // REDIRECT_URL, TEXT_NOTE, VOUCHER_POOL, FILE_DOWNLOAD
+  title          String
+  payload        String   @db.Text // URL, text note, or Supabase storage object path
+  fileStoragePath String?
+  fileSizeBytes  Int?
+  mimeType       String?
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  link           Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@index([linkId])
+}
+
+model VoucherPool {
+  id               String    @id @default(uuid())
+  linkId           String
+  code             String
+  isAssigned       Boolean   @default(false)
+  assignedToUserId String?
+  assignedAt       DateTime?
+  createdAt        DateTime  @default(now())
+
+  link             Link      @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  assignedToUser   User?     @relation(fields: [assignedToUserId], references: [id], onDelete: SetNull)
+
+  @@unique([linkId, code])
+  @@index([linkId, isAssigned])
+}
+
+model Unlock {
+  id            String    @id @default(uuid())
+  linkId        String
+  userId        String
+  unlockedAt    DateTime  @default(now())
+  ipHash        String
+  userAgentHash String
+  expiresAt     DateTime?
+
+  link          Link      @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([linkId, userId])
+  @@index([linkId])
+  @@index([userId])
+}
+
+model UnlockNonce {
+  id        String   @id @default(uuid())
+  nonce     String   @unique
+  linkId    String
+  userId    String
+  tokenHash String
+  used      Boolean  @default(false)
+  usedAt    DateTime?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([nonce])
+  @@index([expiresAt])
+}
+
+model VerificationLog {
+  id              String   @id @default(uuid())
+  linkId          String
+  userId          String
+  requirementType String
+  status          String   // verified, pending, failed, error
+  reason          String   @db.Text
+  ipHash          String
+  checkedAt       DateTime @default(now())
+
+  link            Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([linkId])
+  @@index([userId])
+  @@index([checkedAt])
+}
+
+model VerificationCache {
+  id              String   @id @default(uuid())
+  cacheKey        String   @unique
+  linkId          String
+  userId          String
+  requirementType String
+  status          String
+  reason          String
+  expiresAt       DateTime
+  checkedAt       DateTime @default(now())
+
+  @@index([cacheKey])
+  @@index([expiresAt])
+}
+
+model RateLimit {
+  id           String   @id @default(uuid())
+  key          String   @unique
+  requestCount Int      @default(1)
+  windowStart  DateTime @default(now())
+  expiresAt    DateTime
+
+  @@index([key])
+  @@index([expiresAt])
+}
+
+model QuotaUsage {
+  id                    String   @id @default(uuid())
+  date                  String   @unique // YYYY-MM-DD in PT
+  youtubeUnitsEstimated Int      @default(0)
+  discordRequests       Int      @default(0)
+  updatedAt             DateTime @updatedAt
+
+  @@index([date])
+}
+
+model StatsSnapshot {
+  id            String   @id @default(uuid())
+  linkId        String
+  videoViews    Int      @default(0)
+  videoLikes    Int      @default(0)
+  videoComments Int      @default(0)
+  channelSubs   Int      @default(0)
+  unlockCount   Int      @default(0)
+  recordedAt    DateTime @default(now())
+
+  link          Link     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@index([linkId])
+  @@index([recordedAt])
+}
+
+model DiscordEvent {
+  id            String   @id @default(uuid())
+  guildId       String
+  discordUserId String
+  eventType     String   // MEMBER_JOIN, MEMBER_LEAVE
+  timestamp     DateTime @default(now())
+
+  @@index([guildId, discordUserId])
+}
+
+model BlockList {
+  id        String   @id @default(uuid())
+  type      String   // USER_ID, IP_HASH, DISCORD_ID, CHANNEL_ID
+  value     String
+  reason    String
+  blockedAt DateTime @default(now())
+
+  @@unique([type, value])
+  @@index([value])
+}
+
+model AuditLog {
+  id         String     @id @default(uuid())
+  adminId    String?
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   String?    @db.Text // JSON details
+  ipHash     String?
+  createdAt  DateTime   @default(now())
+
+  admin      AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([adminId])
+  @@index([createdAt])
+}
+
+model AdminSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+}
